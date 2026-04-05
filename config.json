@@ -9,12 +9,12 @@
   "Audio": {
     "MicDevices": [ "Logi" ],
     "SilenceThreshold": 0.003, 
-    "SilenceTimeoutMs": 2500,
+    "SilenceTimeoutMs": 2200,
     "MaxRecordSeconds": 300
   },
   "UI": {
     "HotKey": "F22",
-    "SuccessSoundVolume": 0.5
+    "SuccessSoundVolume": 0.7
   },
   "Logging": {
     "MinimumLevel": "Debug",

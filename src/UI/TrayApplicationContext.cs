@@ -67,7 +67,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         catch (Exception ex)
         {
             _log.LogWarning(ex, "Hotkey {HotKey} registration failed", uiConfig.HotKey);
-            _tray.Text = Truncate("Hotkey " + uiConfig.HotKey + " unavailable - use menu", 63);
+            // Hotkey unavailable — menu-only mode
         }
 
         // Validate mic device at startup
@@ -150,27 +150,27 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             var sw = Stopwatch.StartNew();
 
-            SetState(AppState.Listening, "Listening...");
+            SetState(AppState.Listening);
             using var audio = await _audioCapture.RecordAsync(ct);
             _log.LogInformation("[TIMING] Recording: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             ct.ThrowIfCancellationRequested();
 
             sw.Restart();
-            SetState(AppState.Processing, "Processing...");
+            SetState(AppState.Processing);
             var result = await _pipeline.TranscribeAndProcessAsync(audio, ct);
             _log.LogInformation("[TIMING] Transcribe+Process: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             if (result != null)
             {
                 ClipboardHelper.SetText(result);
-                SetState(AppState.Idle, Truncate(result, 63));
+                SetState(AppState.Idle);
                 FlashSuccess();
                 PlaySuccessSound();
             }
             else
             {
-                SetState(AppState.Idle, "DotWhisper");
+                SetState(AppState.Idle);
             }
         }
         catch (OperationCanceledException)
@@ -188,11 +188,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _state = AppState.Error;
         _tray.Icon = _iconError;
-        _tray.Text = Truncate(message, 63);
+        _log.LogError("Error: {Message}", message);
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
-    private void SetState(AppState state, string tooltip)
+    private void SetState(AppState state)
     {
         _state = state;
         _tray.Icon = state switch
@@ -203,7 +203,6 @@ public sealed class TrayApplicationContext : ApplicationContext
             AppState.Error => _iconError,
             _ => _iconIdle
         };
-        _tray.Text = Truncate(tooltip, 63);
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
@@ -299,8 +298,4 @@ public sealed class TrayApplicationContext : ApplicationContext
         return new Icon(path);
     }
 
-    private static string Truncate(string text, int maxLength)
-    {
-        return text.Length <= maxLength ? text : text[..(maxLength - 3)] + "...";
-    }
 }

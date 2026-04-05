@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.Win32;
 using Serilog;
 using DotWhisper.Core.Api;
 using DotWhisper.Core.Audio;
@@ -25,6 +26,7 @@ static class Program
             return;
         }
 
+        RegisterAutoStart();
         ApplicationConfiguration.Initialize();
 
         var configuration = new ConfigurationBuilder()
@@ -82,6 +84,27 @@ static class Program
         finally
         {
             Log.CloseAndFlush();
+        }
+    }
+
+    private static void RegisterAutoStart()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Run", true);
+            if (key == null) return;
+
+            var exePath = Environment.ProcessPath;
+            if (exePath == null) return;
+
+            var existing = key.GetValue("DotWhisper") as string;
+            if (string.Equals(existing, exePath, StringComparison.OrdinalIgnoreCase)) return;
+
+            key.SetValue("DotWhisper", exePath);
+        }
+        catch
+        {
+            // Non-critical — skip silently
         }
     }
 
