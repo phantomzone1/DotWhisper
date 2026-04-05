@@ -14,9 +14,7 @@
   },
   "UI": {
     "HotKey": "F22",
-    "AutoPaste": true,
-    "AutoPasteDelayMs": 50,
-    "HistoryLimit": 5
+    "SuccessSoundVolume": 0.5
   },
   "Logging": {
     "MinimumLevel": "Debug",
