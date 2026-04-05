@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using NAudio.Wave;
 using DotWhisper.Core.Audio;
 using DotWhisper.Core.Pipeline;
 using DotWhisper.Core.Settings;
@@ -12,8 +13,8 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly ITranscriptionPipeline _pipeline;
     private readonly IAudioCapture _audioCapture;
-    private readonly UiSettings _uiSettings;
     private readonly ILogger<TrayApplicationContext> _log;
+    private readonly float _successSoundVolume;
     private readonly string _logDirectory;
 
     private readonly Icon _iconIdle;
@@ -22,7 +23,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Icon _iconSuccess;
     private readonly Icon _iconError;
 
-    private readonly List<string> _history = [];
     private readonly HotkeyManager? _hotkey;
 
     private CancellationTokenSource? _cts;
@@ -39,9 +39,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _pipeline = pipeline;
         _audioCapture = audioCapture;
-        _uiSettings = uiSettings.Value;
         _log = log;
         _logDirectory = logDirectory;
+
+        var uiConfig = uiSettings.Value;
+        _successSoundVolume = uiConfig.SuccessSoundVolume;
 
         _iconIdle = LoadIcon("idle.ico");
         _iconListening = LoadIcon("listening.ico");
@@ -52,20 +54,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         _tray = new NotifyIcon
         {
             Icon = _iconIdle,
-            Text = "DotWhisper — Idle",
+            Text = "DotWhisper",
             Visible = true,
             ContextMenuStrip = BuildContextMenu()
         };
 
         try
         {
-            _hotkey = new HotkeyManager(_uiSettings.HotKey, OnHotkeyPressed);
-            _log.LogInformation("TrayApplicationContext initialized, hotkey: {HotKey}", _uiSettings.HotKey);
+            _hotkey = new HotkeyManager(uiConfig.HotKey, OnHotkeyPressed);
+            _log.LogInformation("TrayApplicationContext initialized, hotkey: {HotKey}", uiConfig.HotKey);
         }
         catch (Exception ex)
         {
-            _log.LogWarning(ex, "Hotkey {HotKey} registration failed — use context menu to record", _uiSettings.HotKey);
-            _tray.Text = Truncate("Hotkey " + _uiSettings.HotKey + " unavailable - use right-click menu", 63);
+            _log.LogWarning(ex, "Hotkey {HotKey} registration failed", uiConfig.HotKey);
+            // Hotkey unavailable — menu-only mode
         }
 
         // Validate mic device at startup
@@ -91,7 +93,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         menu.Items.Clear();
 
-        // Record/Stop toggle — disabled during Processing or Error
         if (_state == AppState.Listening)
         {
             menu.Items.Add(new ToolStripMenuItem("Stop Recording", null, (_, _) => StopAndTranscribe()));
@@ -104,29 +105,6 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
 
         menu.Items.Add(new ToolStripSeparator());
-
-        // History
-        if (_history.Count > 0)
-        {
-            foreach (var entry in _history)
-            {
-                var snippet = entry.Length > 60 ? entry[..57] + "..." : entry;
-                var fullText = entry;
-                menu.Items.Add(new ToolStripMenuItem(snippet, null, (_, _) =>
-                {
-                    ClipboardHelper.SetText(fullText);
-                }));
-            }
-
-            menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("Clear History", null, (_, _) =>
-            {
-                _history.Clear();
-                RebuildMenuItems(menu);
-            }));
-        }
-
-        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("Open Log File", null, (_, _) => OpenLogFile()));
         menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => ExitApplication()));
     }
@@ -135,7 +113,6 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (_state == AppState.Error)
         {
-            // Re-validate mic before allowing recording from error state
             try
             {
                 _audioCapture.ValidateMicDevice();
@@ -171,37 +148,30 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var sw = Stopwatch.StartNew();
 
-            // Record
-            SetState(AppState.Listening, "Listening...");
+            SetState(AppState.Listening);
             using var audio = await _audioCapture.RecordAsync(ct);
             _log.LogInformation("[TIMING] Recording: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             ct.ThrowIfCancellationRequested();
 
-            // Transcribe + process
             sw.Restart();
-            SetState(AppState.Processing, "Processing...");
+            SetState(AppState.Processing);
             var result = await _pipeline.TranscribeAndProcessAsync(audio, ct);
             _log.LogInformation("[TIMING] Transcribe+Process: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             if (result != null)
             {
-                AddToHistory(result);
-                SetState(AppState.Idle, Truncate(result, 63));
+                ClipboardHelper.SetText(result);
+                SetState(AppState.Idle);
                 FlashSuccess();
-
-                if (_uiSettings.AutoPaste)
-                    ClipboardHelper.AutoPaste(result, _log);
-                else
-                    ClipboardHelper.SetText(result);
+                PlaySuccessSound();
             }
             else
             {
-                SetState(AppState.Idle, "DotWhisper — Idle");
+                SetState(AppState.Idle);
             }
-
         }
         catch (OperationCanceledException)
         {
@@ -218,11 +188,11 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _state = AppState.Error;
         _tray.Icon = _iconError;
-        _tray.Text = Truncate(message, 63);
+        _log.LogError("Error: {Message}", message);
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
-    private void SetState(AppState state, string tooltip)
+    private void SetState(AppState state)
     {
         _state = state;
         _tray.Icon = state switch
@@ -233,7 +203,6 @@ public sealed class TrayApplicationContext : ApplicationContext
             AppState.Error => _iconError,
             _ => _iconIdle
         };
-        _tray.Text = Truncate(tooltip, 63);
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
@@ -251,21 +220,12 @@ public sealed class TrayApplicationContext : ApplicationContext
         timer.Start();
     }
 
-    private void AddToHistory(string text)
-    {
-        _history.Insert(0, text);
-        if (_history.Count > _uiSettings.HistoryLimit)
-            _history.RemoveAt(_history.Count - 1);
-        RebuildMenuItems(_tray.ContextMenuStrip!);
-    }
-
     private void OpenLogFile()
     {
         try
         {
             if (Directory.Exists(_logDirectory))
             {
-                // Open the most recent log file, or the directory if none exist
                 var latestLog = Directory.GetFiles(_logDirectory, "*.log")
                     .OrderByDescending(File.GetLastWriteTime)
                     .FirstOrDefault();
@@ -295,14 +255,47 @@ public sealed class TrayApplicationContext : ApplicationContext
         Application.Exit();
     }
 
+    private void PlaySuccessSound()
+    {
+        try
+        {
+            const int sampleRate = 44100;
+            const float duration = 0.03f; // 30ms click
+            const float volume = 0.3f;
+            int samples = (int)(sampleRate * duration);
+
+            var buffer = new float[samples];
+            for (int i = 0; i < samples; i++)
+            {
+                float t = (float)i / sampleRate;
+                float envelope = 1f - (float)i / samples;
+                buffer[i] = volume * envelope * MathF.Sin(2 * MathF.PI * 800f * t);
+            }
+
+            var provider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1))
+            {
+                BufferLength = buffer.Length * 4 + 4096,
+                ReadFully = false
+            };
+            var bytes = new byte[buffer.Length * 4];
+            Buffer.BlockCopy(buffer, 0, bytes, 0, bytes.Length);
+            provider.AddSamples(bytes, 0, bytes.Length);
+
+            var wo = new WaveOutEvent { Volume = _successSoundVolume };
+            wo.Init(provider);
+            wo.PlaybackStopped += (_, _) => wo.Dispose();
+            wo.Play();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Failed to play success sound");
+        }
+    }
+
     private static Icon LoadIcon(string name)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "Icons", name);
         return new Icon(path);
     }
 
-    private static string Truncate(string text, int maxLength)
-    {
-        return text.Length <= maxLength ? text : text[..(maxLength - 3)] + "...";
-    }
 }

@@ -8,14 +8,13 @@
   },
   "Audio": {
     "MicDevices": [ "Logi" ],
-    "SilenceThreshold": 0.005,
-    "SilenceTimeoutMs": 4000,
+    "SilenceThreshold": 0.003, 
+    "SilenceTimeoutMs": 2200,
     "MaxRecordSeconds": 300
   },
   "UI": {
     "HotKey": "F22",
-    "AutoPaste": true,
-    "HistoryLimit": 15
+    "SuccessSoundVolume": 0.7
   },
   "Logging": {
     "MinimumLevel": "Debug",
