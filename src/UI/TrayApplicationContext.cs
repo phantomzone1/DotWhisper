@@ -13,6 +13,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly ITranscriptionPipeline _pipeline;
     private readonly ITranscriptionClient _transcriptionClient;
+    private readonly IAudioCapture _audioCapture;
     private readonly WhisperSettings _whisperSettings;
     private readonly UiSettings _uiSettings;
     private readonly ILogger<TrayApplicationContext> _log;
@@ -36,6 +37,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     public TrayApplicationContext(
         ITranscriptionPipeline pipeline,
         ITranscriptionClient transcriptionClient,
+        IAudioCapture audioCapture,
         IOptions<WhisperSettings> whisperSettings,
         IOptions<UiSettings> uiSettings,
         ILogger<TrayApplicationContext> log,
@@ -43,6 +45,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _pipeline = pipeline;
         _transcriptionClient = transcriptionClient;
+        _audioCapture = audioCapture;
         _whisperSettings = whisperSettings.Value;
         _uiSettings = uiSettings.Value;
         _log = log;
@@ -78,11 +81,16 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Clear();
 
         // Record/Stop toggle
-        var recordItem = _state == AppState.Listening
-            ? new ToolStripMenuItem("Stop Recording", null, (_, _) => StopAndTranscribe())
-            : new ToolStripMenuItem("Start Recording", null, (_, _) => OnHotkeyPressed());
-        recordItem.Enabled = _state != AppState.Processing;
-        menu.Items.Add(recordItem);
+        if (_state == AppState.Listening)
+        {
+            menu.Items.Add(new ToolStripMenuItem("Stop Recording", null, (_, _) => StopAndTranscribe()));
+        }
+        else
+        {
+            var recordItem = new ToolStripMenuItem("Start Recording", null, (_, _) => OnHotkeyPressed());
+            recordItem.Enabled = _state != AppState.Processing;
+            menu.Items.Add(recordItem);
+        }
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -116,14 +124,21 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         if (_state == AppState.Listening || _state == AppState.Processing)
         {
-            // Cancel in-flight work and start fresh
+            // F22 during active work: cancel and discard via CancellationToken
             _cts?.Cancel();
             _cts?.Dispose();
             _cts = null;
-            _log.LogInformation("Previous {State} cancelled, starting fresh recording", _state);
+            _log.LogInformation("Previous {State} cancelled via F22, starting fresh recording", _state);
         }
 
         _ = StartRecordingAsync();
+    }
+
+    private void StopAndTranscribe()
+    {
+        // Manual stop: gracefully stop recording so audio is sent for transcription
+        // (unlike F22 which cancels/discards via CancellationToken)
+        _audioCapture.RequestStop();
     }
 
     private async Task StartRecordingAsync()
@@ -142,8 +157,15 @@ public sealed class TrayApplicationContext : ApplicationContext
                 await _transcriptionClient.WarmupAsync(ct);
             }
 
+            // Record
             SetState(AppState.Listening, "Listening...");
-            var result = await _pipeline.ExecuteAsync(ct);
+            using var audio = await _audioCapture.RecordAsync(ct);
+
+            ct.ThrowIfCancellationRequested();
+
+            // Transcribe + process
+            SetState(AppState.Processing, "Processing...");
+            var result = await _pipeline.TranscribeAndProcessAsync(audio, ct);
 
             if (result != null)
             {
@@ -167,7 +189,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         catch (OperationCanceledException)
         {
             // Expected when F22 restarts — don't treat as error
-            _log.LogDebug("Recording cancelled");
+            _log.LogDebug("Recording/transcription cancelled");
         }
         catch (Exception ex)
         {
@@ -175,13 +197,6 @@ public sealed class TrayApplicationContext : ApplicationContext
             SetState(AppState.Idle, Truncate(ex.Message, 128));
             FlashIcon(_iconError);
         }
-    }
-
-    private void StopAndTranscribe()
-    {
-        // VAD or manual stop — cancel triggers the pipeline to finalize
-        // The pipeline's RecordAsync respects cancellation and returns captured audio
-        _cts?.Cancel();
     }
 
     private void SetState(AppState state, string tooltip)

@@ -9,11 +9,17 @@ public sealed class AudioCapture : IAudioCapture
 {
     private readonly AudioSettings _settings;
     private readonly ILogger<AudioCapture> _log;
+    private TaskCompletionSource<bool>? _activeTcs;
 
     public AudioCapture(IOptions<AudioSettings> settings, ILogger<AudioCapture> log)
     {
         _settings = settings.Value;
         _log = log;
+    }
+
+    public void RequestStop()
+    {
+        _activeTcs?.TrySetResult(true);
     }
 
     public async Task<MemoryStream> RecordAsync(CancellationToken ct = default)
@@ -37,6 +43,7 @@ public sealed class AudioCapture : IAudioCapture
         var silenceTimeout = TimeSpan.FromMilliseconds(_settings.SilenceTimeoutMs);
 
         var tcs = new TaskCompletionSource<bool>();
+        _activeTcs = tcs;
 
         capture.DataAvailable += (_, e) =>
         {
@@ -92,6 +99,7 @@ public sealed class AudioCapture : IAudioCapture
         }
         finally
         {
+            _activeTcs = null;
             capture.StopRecording();
             await writer.FlushAsync();
         }
@@ -135,7 +143,7 @@ public sealed class AudioCapture : IAudioCapture
 
     private static double CalculateRms(byte[] buffer, int bytesRecorded)
     {
-        int sampleCount = bytesRecorded / 2; // 16-bit samples
+        int sampleCount = bytesRecorded / 2;
         double sumOfSquares = 0;
 
         for (int i = 0; i < bytesRecorded; i += 2)

@@ -3,7 +3,8 @@ namespace DotWhisper.Core.Pipeline;
 public interface ITranscriptionPipeline
 {
     /// <summary>
-    /// Orchestrates the full flow: capture audio → transcribe → process text → clipboard.
+    /// Transcribes audio from the provided stream and runs the result through text processors.
+    /// Returns null if the result is empty/whitespace after processing.
     /// </summary>
-    Task<string?> ExecuteAsync(CancellationToken ct = default);
+    Task<string?> TranscribeAndProcessAsync(Stream audioStream, CancellationToken ct = default);
 }

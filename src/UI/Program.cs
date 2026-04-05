@@ -68,6 +68,7 @@ static class Program
             var context = new TrayApplicationContext(
                 provider.GetRequiredService<ITranscriptionPipeline>(),
                 provider.GetRequiredService<ITranscriptionClient>(),
+                provider.GetRequiredService<IAudioCapture>(),
                 provider.GetRequiredService<IOptions<WhisperSettings>>(),
                 provider.GetRequiredService<IOptions<UiSettings>>(),
                 provider.GetRequiredService<ILogger<TrayApplicationContext>>(),
