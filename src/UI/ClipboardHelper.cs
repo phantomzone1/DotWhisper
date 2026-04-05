@@ -5,13 +5,21 @@ namespace DotWhisper.UI;
 
 public static partial class ClipboardHelper
 {
-    private const byte VK_CONTROL = 0x11;
-    private const byte VK_V = 0x56;
     private const uint INPUT_KEYBOARD = 1;
     private const uint KEYEVENTF_KEYUP = 0x0002;
 
     [LibraryImport("user32.dll", SetLastError = true)]
     private static partial uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);
+
+    [LibraryImport("user32.dll")]
+    private static partial IntPtr GetForegroundWindow();
+
+    [LibraryImport("user32.dll")]
+    private static partial uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static partial bool AttachThreadInput(uint idAttach, uint idAttachTo, [MarshalAs(UnmanagedType.Bool)] bool fAttach);
 
     public static void SetText(string text)
     {
@@ -21,7 +29,7 @@ public static partial class ClipboardHelper
         }
         catch (ExternalException)
         {
-            // Clipboard locked by another process — skip
+            // Clipboard locked by another process
         }
     }
 
@@ -30,7 +38,30 @@ public static partial class ClipboardHelper
         try
         {
             Clipboard.SetText(text);
-            SendCtrlV();
+
+            // Small delay to ensure clipboard is ready
+            Thread.Sleep(50);
+
+            // Attach to the foreground window's thread so SendInput targets it
+            var foreground = GetForegroundWindow();
+            var foregroundThread = GetWindowThreadProcessId(foreground, out _);
+            var currentThread = (uint)Environment.CurrentManagedThreadId;
+
+            bool attached = false;
+            if (foregroundThread != currentThread)
+            {
+                attached = AttachThreadInput(currentThread, foregroundThread, true);
+            }
+
+            try
+            {
+                SendCtrlV();
+            }
+            finally
+            {
+                if (attached)
+                    AttachThreadInput(currentThread, foregroundThread, false);
+            }
         }
         catch (ExternalException ex)
         {
@@ -42,22 +73,22 @@ public static partial class ClipboardHelper
     {
         var inputs = new INPUT[]
         {
-            KeyDown(VK_CONTROL),
-            KeyDown(VK_V),
-            KeyUp(VK_V),
-            KeyUp(VK_CONTROL)
+            KeyDown(0x11),  // VK_CONTROL
+            KeyDown(0x56),  // VK_V
+            KeyUp(0x56),
+            KeyUp(0x11)
         };
 
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
 
-    private static INPUT KeyDown(byte vk) => new()
+    private static INPUT KeyDown(ushort vk) => new()
     {
         type = INPUT_KEYBOARD,
         u = new InputUnion { ki = new KEYBDINPUT { wVk = vk } }
     };
 
-    private static INPUT KeyUp(byte vk) => new()
+    private static INPUT KeyUp(ushort vk) => new()
     {
         type = INPUT_KEYBOARD,
         u = new InputUnion { ki = new KEYBDINPUT { wVk = vk, dwFlags = KEYEVENTF_KEYUP } }
