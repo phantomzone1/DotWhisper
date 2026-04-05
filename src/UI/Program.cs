@@ -32,12 +32,13 @@ static class Program
             .AddJsonFile("config.json", optional: false, reloadOnChange: false)
             .Build();
 
-        var logFilePath = Path.Combine(AppContext.BaseDirectory, "logs", "dotwhisper-.log");
+        var logDirectory = Path.Combine(AppContext.BaseDirectory, "logs");
+        var logFileTemplate = Path.Combine(logDirectory, "dotwhisper-.log");
 
         Log.Logger = new LoggerConfiguration()
             .MinimumLevel.Is(ParseLogLevel(configuration["Logging:MinimumLevel"]))
             .WriteTo.File(
-                logFilePath,
+                logFileTemplate,
                 rollingInterval: RollingInterval.Day,
                 retainedFileCountLimit: 7)
             .CreateLogger();
@@ -67,12 +68,10 @@ static class Program
 
             var context = new TrayApplicationContext(
                 provider.GetRequiredService<ITranscriptionPipeline>(),
-                provider.GetRequiredService<ITranscriptionClient>(),
                 provider.GetRequiredService<IAudioCapture>(),
-                provider.GetRequiredService<IOptions<WhisperSettings>>(),
                 provider.GetRequiredService<IOptions<UiSettings>>(),
                 provider.GetRequiredService<ILogger<TrayApplicationContext>>(),
-                logFilePath);
+                logDirectory);
 
             Application.Run(context);
         }

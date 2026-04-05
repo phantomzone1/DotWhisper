@@ -22,6 +22,11 @@ public sealed class AudioCapture : IAudioCapture
         _activeTcs?.TrySetResult(true);
     }
 
+    public void ValidateMicDevice()
+    {
+        FindMicDevice();
+    }
+
     public async Task<MemoryStream> RecordAsync(CancellationToken ct = default)
     {
         var deviceNumber = FindMicDevice();
@@ -59,6 +64,13 @@ public sealed class AudioCapture : IAudioCapture
             totalDuration += chunkDuration;
 
             var rms = CalculateRms(e.Buffer, e.BytesRecorded);
+
+            // Log RMS every ~1 second for tuning (every 10th chunk at 100ms buffer)
+            if ((int)(totalDuration.TotalMilliseconds / 100) % 10 == 0)
+            {
+                _log.LogDebug("RMS: {Rms:F4} | Threshold: {Threshold} | Speech: {Speech} | Silence: {SilenceMs}ms",
+                    rms, _settings.SilenceThreshold, speechDetected, silenceDuration.TotalMilliseconds);
+            }
 
             if (rms >= _settings.SilenceThreshold)
             {
@@ -101,14 +113,18 @@ public sealed class AudioCapture : IAudioCapture
         {
             _activeTcs = null;
             capture.StopRecording();
-            await writer.FlushAsync();
+            writer.Dispose(); // Finalizes WAV header with correct RIFF/data sizes
         }
 
-        audioStream.Position = 0;
+        // ToArray works on disposed MemoryStream — gives us the finalized WAV bytes
+        var wavBytes = audioStream.ToArray();
+        var finalStream = new MemoryStream(wavBytes);
         _log.LogInformation("Recording complete: {TotalMs}ms, {Bytes} bytes",
-            totalDuration.TotalMilliseconds, audioStream.Length);
+            totalDuration.TotalMilliseconds, finalStream.Length);
 
-        return audioStream;
+
+
+        return finalStream;
     }
 
     private int FindMicDevice()

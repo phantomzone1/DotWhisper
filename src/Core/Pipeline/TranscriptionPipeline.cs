@@ -34,7 +34,9 @@ public sealed class TranscriptionPipeline : ITranscriptionPipeline
         };
 
         _log.LogInformation("Sending {Bytes} bytes for transcription", audioStream.Length);
+        var sw = System.Diagnostics.Stopwatch.StartNew();
         var text = await _client.TranscribeAsync(audioStream, request, ct);
+        _log.LogInformation("[TIMING] API call: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
         // Trim and check for empty
         text = text.Trim();

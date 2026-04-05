@@ -1,7 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using DotWhisper.Core.Api;
 using DotWhisper.Core.Audio;
 using DotWhisper.Core.Pipeline;
 using DotWhisper.Core.Settings;
@@ -12,12 +11,10 @@ public sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly NotifyIcon _tray;
     private readonly ITranscriptionPipeline _pipeline;
-    private readonly ITranscriptionClient _transcriptionClient;
     private readonly IAudioCapture _audioCapture;
-    private readonly WhisperSettings _whisperSettings;
     private readonly UiSettings _uiSettings;
     private readonly ILogger<TrayApplicationContext> _log;
-    private readonly string _logFilePath;
+    private readonly string _logDirectory;
 
     private readonly Icon _iconIdle;
     private readonly Icon _iconListening;
@@ -26,30 +23,25 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Icon _iconError;
 
     private readonly List<string> _history = [];
-    private readonly HotkeyManager _hotkey;
+    private readonly HotkeyManager? _hotkey;
 
     private CancellationTokenSource? _cts;
     private AppState _state = AppState.Idle;
-    private DateTime _lastActivityUtc = DateTime.UtcNow;
 
-    private enum AppState { Idle, Listening, Processing }
+    private enum AppState { Idle, Listening, Processing, Error }
 
     public TrayApplicationContext(
         ITranscriptionPipeline pipeline,
-        ITranscriptionClient transcriptionClient,
         IAudioCapture audioCapture,
-        IOptions<WhisperSettings> whisperSettings,
         IOptions<UiSettings> uiSettings,
         ILogger<TrayApplicationContext> log,
-        string logFilePath)
+        string logDirectory)
     {
         _pipeline = pipeline;
-        _transcriptionClient = transcriptionClient;
         _audioCapture = audioCapture;
-        _whisperSettings = whisperSettings.Value;
         _uiSettings = uiSettings.Value;
         _log = log;
-        _logFilePath = logFilePath;
+        _logDirectory = logDirectory;
 
         _iconIdle = LoadIcon("idle.ico");
         _iconListening = LoadIcon("listening.ico");
@@ -65,8 +57,27 @@ public sealed class TrayApplicationContext : ApplicationContext
             ContextMenuStrip = BuildContextMenu()
         };
 
-        _hotkey = new HotkeyManager(_uiSettings.HotKey, OnHotkeyPressed);
-        _log.LogInformation("TrayApplicationContext initialized, hotkey: {HotKey}", _uiSettings.HotKey);
+        try
+        {
+            _hotkey = new HotkeyManager(_uiSettings.HotKey, OnHotkeyPressed);
+            _log.LogInformation("TrayApplicationContext initialized, hotkey: {HotKey}", _uiSettings.HotKey);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Hotkey {HotKey} registration failed — use context menu to record", _uiSettings.HotKey);
+            _tray.Text = Truncate("Hotkey " + _uiSettings.HotKey + " unavailable - use right-click menu", 63);
+        }
+
+        // Validate mic device at startup
+        try
+        {
+            _audioCapture.ValidateMicDevice();
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Mic validation failed at startup");
+            SetError(ex.Message);
+        }
     }
 
     private ContextMenuStrip BuildContextMenu()
@@ -80,7 +91,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         menu.Items.Clear();
 
-        // Record/Stop toggle
+        // Record/Stop toggle — disabled during Processing or Error
         if (_state == AppState.Listening)
         {
             menu.Items.Add(new ToolStripMenuItem("Stop Recording", null, (_, _) => StopAndTranscribe()));
@@ -88,7 +99,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         else
         {
             var recordItem = new ToolStripMenuItem("Start Recording", null, (_, _) => OnHotkeyPressed());
-            recordItem.Enabled = _state != AppState.Processing;
+            recordItem.Enabled = _state == AppState.Idle;
             menu.Items.Add(recordItem);
         }
 
@@ -122,13 +133,27 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void OnHotkeyPressed()
     {
+        if (_state == AppState.Error)
+        {
+            // Re-validate mic before allowing recording from error state
+            try
+            {
+                _audioCapture.ValidateMicDevice();
+            }
+            catch (Exception ex)
+            {
+                _log.LogError(ex, "Mic still not available");
+                SetError(ex.Message);
+                return;
+            }
+        }
+
         if (_state == AppState.Listening || _state == AppState.Processing)
         {
-            // F22 during active work: cancel and discard via CancellationToken
             _cts?.Cancel();
             _cts?.Dispose();
             _cts = null;
-            _log.LogInformation("Previous {State} cancelled via F22, starting fresh recording", _state);
+            _log.LogInformation("Previous {State} cancelled via hotkey, starting fresh recording", _state);
         }
 
         _ = StartRecordingAsync();
@@ -136,8 +161,6 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void StopAndTranscribe()
     {
-        // Manual stop: gracefully stop recording so audio is sent for transcription
-        // (unlike F22 which cancels/discards via CancellationToken)
         _audioCapture.RequestStop();
     }
 
@@ -148,30 +171,26 @@ public sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            // Warmup if idle too long
-            var idleMinutes = (DateTime.UtcNow - _lastActivityUtc).TotalMinutes;
-            if (idleMinutes >= _whisperSettings.ColdStartThresholdMinutes)
-            {
-                _log.LogInformation("Idle for {Minutes:F0} minutes, sending warmup", idleMinutes);
-                SetState(AppState.Processing, "Warming up...");
-                await _transcriptionClient.WarmupAsync(ct);
-            }
+            var sw = System.Diagnostics.Stopwatch.StartNew();
 
             // Record
             SetState(AppState.Listening, "Listening...");
             using var audio = await _audioCapture.RecordAsync(ct);
+            _log.LogInformation("[TIMING] Recording: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             ct.ThrowIfCancellationRequested();
 
             // Transcribe + process
+            sw.Restart();
             SetState(AppState.Processing, "Processing...");
             var result = await _pipeline.TranscribeAndProcessAsync(audio, ct);
+            _log.LogInformation("[TIMING] Transcribe+Process: {ElapsedMs}ms", sw.ElapsedMilliseconds);
 
             if (result != null)
             {
                 AddToHistory(result);
-                SetState(AppState.Idle, Truncate(result, 128));
-                FlashIcon(_iconSuccess);
+                SetState(AppState.Idle, Truncate(result, 63));
+                FlashSuccess();
 
                 if (_uiSettings.AutoPaste)
                     ClipboardHelper.AutoPaste(result, _log);
@@ -180,23 +199,27 @@ public sealed class TrayApplicationContext : ApplicationContext
             }
             else
             {
-                // Empty/whitespace result — silently return to idle
                 SetState(AppState.Idle, "DotWhisper — Idle");
             }
 
-            _lastActivityUtc = DateTime.UtcNow;
         }
         catch (OperationCanceledException)
         {
-            // Expected when F22 restarts — don't treat as error
             _log.LogDebug("Recording/transcription cancelled");
         }
         catch (Exception ex)
         {
             _log.LogError(ex, "Recording/transcription failed");
-            SetState(AppState.Idle, Truncate(ex.Message, 128));
-            FlashIcon(_iconError);
+            SetError(ex.Message);
         }
+    }
+
+    private void SetError(string message)
+    {
+        _state = AppState.Error;
+        _tray.Icon = _iconError;
+        _tray.Text = Truncate(message, 63);
+        RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
     private void SetState(AppState state, string tooltip)
@@ -207,16 +230,16 @@ public sealed class TrayApplicationContext : ApplicationContext
             AppState.Idle => _iconIdle,
             AppState.Listening => _iconListening,
             AppState.Processing => _iconProcessing,
+            AppState.Error => _iconError,
             _ => _iconIdle
         };
-        _tray.Text = Truncate(tooltip, 128);
+        _tray.Text = Truncate(tooltip, 63);
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
-    private void FlashIcon(Icon icon)
+    private void FlashSuccess()
     {
-        var previous = _tray.Icon;
-        _tray.Icon = icon;
+        _tray.Icon = _iconSuccess;
 
         var timer = new System.Windows.Forms.Timer { Interval = 1500 };
         timer.Tick += (_, _) =>
@@ -240,10 +263,20 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         try
         {
-            if (File.Exists(_logFilePath))
-                Process.Start(new ProcessStartInfo(_logFilePath) { UseShellExecute = true });
+            if (Directory.Exists(_logDirectory))
+            {
+                // Open the most recent log file, or the directory if none exist
+                var latestLog = Directory.GetFiles(_logDirectory, "*.log")
+                    .OrderByDescending(File.GetLastWriteTime)
+                    .FirstOrDefault();
+
+                var target = latestLog ?? _logDirectory;
+                Process.Start(new ProcessStartInfo(target) { UseShellExecute = true });
+            }
             else
-                _log.LogWarning("Log file not found: {Path}", _logFilePath);
+            {
+                _log.LogWarning("Log directory not found: {Path}", _logDirectory);
+            }
         }
         catch (Exception ex)
         {
@@ -256,7 +289,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _log.LogInformation("Application exiting");
         _cts?.Cancel();
         _cts?.Dispose();
-        _hotkey.Dispose();
+        _hotkey?.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         Application.Exit();
