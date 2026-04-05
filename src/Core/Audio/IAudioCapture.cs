@@ -15,4 +15,10 @@ public interface IAudioCapture
     /// Used by Manual Record/Stop menu — unlike CancellationToken which discards.
     /// </summary>
     void RequestStop();
+
+    /// <summary>
+    /// Validates that a configured mic device is available.
+    /// Throws InvalidOperationException if no matching device is found.
+    /// </summary>
+    void ValidateMicDevice();
 }

@@ -42,11 +42,24 @@ public sealed class WhisperTranscriptionClient : ITranscriptionClient
 
     public async Task<string> TranscribeAsync(Stream audioStream, TranscriptionRequest request, CancellationToken ct = default)
     {
+        // Read stream into byte array so we send Content-Length (not chunked encoding)
+        byte[] audioBytes;
+        if (audioStream is MemoryStream ms)
+        {
+            audioBytes = ms.ToArray();
+        }
+        else
+        {
+            using var temp = new MemoryStream();
+            await audioStream.CopyToAsync(temp, ct);
+            audioBytes = temp.ToArray();
+        }
+
         using var content = new MultipartFormDataContent();
-        content.Add(new StreamContent(audioStream), "file", "audio.wav");
+        var fileContent = new ByteArrayContent(audioBytes);
+        fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
+        content.Add(fileContent, "file", "audio.wav");
         content.Add(new StringContent(request.Model), "model");
-        content.Add(new StringContent(request.Language), "language");
-        content.Add(new StringContent(request.Temperature.ToString()), "temperature");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _http.PostAsync("/v1/audio/transcriptions", content, ct);

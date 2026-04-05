@@ -1,15 +1,15 @@
 {
   "Whisper": {
-    "BaseUrl": "http://192.168.1.50:8000/v1",
-    "Model": "whisper-1",
+    "BaseUrl": "http://127.0.0.1:10300/v1",
+    "Model": "deepdml/faster-whisper-large-v3-turbo-ct2",
     "Language": "en",
     "Temperature": 0,
     "ColdStartThresholdMinutes": 30
   },
   "Audio": {
-    "MicDevices": [ "Remote Audio", "Logitech" ],
-    "SilenceThreshold": 0.02,
-    "SilenceTimeoutMs": 1200,
+    "MicDevices": [ "Logi" ],
+    "SilenceThreshold": 0.005,
+    "SilenceTimeoutMs": 4000,
     "MaxRecordSeconds": 300
   },
   "UI": {
@@ -18,7 +18,7 @@
     "HistoryLimit": 15
   },
   "Logging": {
-    "MinimumLevel": "Information",
+    "MinimumLevel": "Debug",
     "LogToFile": true
   }
 }
