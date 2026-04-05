@@ -1,0 +1,56 @@
+## [ User Secrets & Environment ]
+# Block all local environment files
+.env
+.env.*
+!.env.example
+# Block local app settings that might contain your Host IP/Keys
+src/UI/appsettings.Development.json
+src/UI/appsettings.local.json
+# config.json — checked in; local-only server IP is acceptable
+# Block any local user-specific IDE settings
+.vs/
+.vscode/
+*.user
+*.userosscache
+*.sln.docstates
+
+## [ .NET Build Artifacts ]
+# Standard build output
+[Bb]in/
+[Oo]bj/
+# Native AOT / Publish output
+publish/
+# MSBuild Auto-generated files
+Generated/
+
+## [ NuGet & Dependencies ]
+# We use Central Package Management and Lock Files, 
+# so we ignore the actual installed packages.
+*.nupkg
+# Note: Do NOT ignore packages.lock.json (it should be committed)
+# Note: Do NOT ignore Directory.Packages.props
+
+## [ OS / VM Specific ]
+# Windows-specific
+Thumbs.db
+desktop.ini
+# macOS-specific (if you ever open the repo on a Mac)
+.DS_Store
+
+## [ Logging & Telemetry ]
+# Ignore the Serilog output files we defined in the Arch Doc
+logs/
+*.log
+*.txt
+
+## [ Test Results ]
+TestResults/
+*.trx
+*.html
+
+## [ Tools ]
+# If you use any local tools for the 5090 container orchestration
+.python-version
+__pycache__/
+*.pyc
+.claude/

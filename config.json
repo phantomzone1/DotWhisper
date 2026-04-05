@@ -1,0 +1,24 @@
+{
+  "Whisper": {
+    "BaseUrl": "http://192.168.1.50:8000/v1",
+    "Model": "whisper-1",
+    "Language": "en",
+    "Temperature": 0,
+    "ColdStartThresholdMinutes": 30
+  },
+  "Audio": {
+    "MicDevices": [ "Remote Audio", "Logitech" ],
+    "SilenceThreshold": 0.02,
+    "SilenceTimeoutMs": 1200,
+    "MaxRecordSeconds": 300
+  },
+  "UI": {
+    "HotKey": "F22",
+    "AutoPaste": true,
+    "HistoryLimit": 15
+  },
+  "Logging": {
+    "MinimumLevel": "Information",
+    "LogToFile": true
+  }
+}
