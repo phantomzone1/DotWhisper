@@ -125,7 +125,16 @@ public sealed class TrayApplicationContext : ApplicationContext
             }
         }
 
-        if (_state == AppState.Listening || _state == AppState.Processing)
+        if (_state == AppState.Listening)
+        {
+            // Second press while recording: force-stop and send what's been captured so far,
+            // same as the "Stop Recording" menu item — a manual override for when background
+            // noise keeps the auto silence-detection from ever firing on its own.
+            StopAndTranscribe();
+            return;
+        }
+
+        if (_state == AppState.Processing)
         {
             _cts?.Cancel();
             _cts?.Dispose();
@@ -138,6 +147,7 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void StopAndTranscribe()
     {
+        _log.LogInformation("Recording stopped manually, sending for transcription");
         _audioCapture.RequestStop();
     }
 
