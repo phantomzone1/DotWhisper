@@ -270,16 +270,20 @@ public sealed class TrayApplicationContext : ApplicationContext
         try
         {
             const int sampleRate = 44100;
-            const float duration = 0.03f; // 30ms click
-            const float volume = 0.3f;
+            const float duration = 0.4f; // 400ms — long enough to read as a "ding", not a click
+            const float volume = 0.35f;
+            const float fundamental = 1200f; // bright, bell-like pitch (vs. the old 800Hz boop)
+            const float decayRate = 6f; // exponential decay — a natural chime tail, not a hard cutoff
             int samples = (int)(sampleRate * duration);
 
             var buffer = new float[samples];
             for (int i = 0; i < samples; i++)
             {
                 float t = (float)i / sampleRate;
-                float envelope = 1f - (float)i / samples;
-                buffer[i] = volume * envelope * MathF.Sin(2 * MathF.PI * 800f * t);
+                float envelope = MathF.Exp(-decayRate * t);
+                float tone = MathF.Sin(2 * MathF.PI * fundamental * t)
+                    + 0.4f * MathF.Sin(2 * MathF.PI * fundamental * 2f * t); // overtone for a bell-like timbre
+                buffer[i] = volume * envelope * tone;
             }
 
             var provider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1))
