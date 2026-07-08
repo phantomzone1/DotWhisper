@@ -1,23 +1,25 @@
 {
   "Whisper": {
-    "BaseUrl": "http://127.0.0.1:10300/v1",
+    "BaseUrl": "http://127.0.0.1:10300/v1",  //swagger page http://localhost:10300/docs#
     "Model": "deepdml/faster-whisper-large-v3-turbo-ct2",
     "Language": "en",
     "Temperature": 0,
+    "VadFilter": true,
     "ColdStartThresholdMinutes": 30
   },
   "Audio": {
     "MicDevices": [ "Logi" ],
-    "SilenceThreshold": 0.003, 
-    "SilenceTimeoutMs": 2200,
-    "MaxRecordSeconds": 300
+    "SilenceThreshold": 0.003,   //higher is less sensitive
+    "SilenceTimeoutMs": 2500,
+    "MaxRecordSeconds": 300,
+    "TrailingPaddingMs": 500
   },
   "UI": {
     "HotKey": "F22",
-    "SuccessSoundVolume": 0.7
+    "SuccessSoundVolume": 0.7   //higher is louder up to 1
   },
   "Logging": {
-    "MinimumLevel": "Debug",
+    "MinimumLevel": "Information",
     "LogToFile": true
   }
 }

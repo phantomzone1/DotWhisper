@@ -33,8 +33,7 @@ public sealed class WhisperTranscriptionClient : ITranscriptionClient
         {
             Model = _settings.Model,
             Language = _settings.Language,
-            Temperature = _settings.Temperature,
-            VadFilter = _settings.VadFilter
+            Temperature = _settings.Temperature
         };
 
         await TranscribeAsync(silence, request, ct);
@@ -61,9 +60,6 @@ public sealed class WhisperTranscriptionClient : ITranscriptionClient
         fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", "audio.wav");
         content.Add(new StringContent(request.Model), "model");
-        content.Add(new StringContent(request.Language), "language");
-        content.Add(new StringContent(request.Temperature.ToString(System.Globalization.CultureInfo.InvariantCulture)), "temperature");
-        content.Add(new StringContent(request.VadFilter ? "true" : "false"), "vad_filter");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _http.PostAsync("/v1/audio/transcriptions", content, ct);

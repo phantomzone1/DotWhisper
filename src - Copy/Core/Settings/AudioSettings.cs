@@ -6,8 +6,4 @@ public sealed class AudioSettings
     public double SilenceThreshold { get; init; } = 0.02;
     public int SilenceTimeoutMs { get; init; } = 1200;
     public int MaxRecordSeconds { get; init; } = 300;
-
-    // Kept from the start of the held-back silence (closest to the last confirmed speech) when
-    // recording stops, so a quiet trailing word isn't clipped along with the real dead air.
-    public int TrailingPaddingMs { get; init; } = 500;
 }

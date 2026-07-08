@@ -46,7 +46,6 @@ public sealed class AudioCapture : IAudioCapture
 		var totalDuration = TimeSpan.Zero;
 		var maxDuration = TimeSpan.FromSeconds(_settings.MaxRecordSeconds);
 		var silenceTimeout = TimeSpan.FromMilliseconds(_settings.SilenceTimeoutMs);
-		var pendingSilence = new List<byte[]>();
 
 		var stopRequestedTcs = new TaskCompletionSource<bool>(
 			TaskCreationOptions.RunContinuationsAsynchronously);
@@ -66,6 +65,8 @@ public sealed class AudioCapture : IAudioCapture
 				return;
 			}
 
+			writer.Write(e.Buffer, 0, e.BytesRecorded);
+
 			var chunkDuration = TimeSpan.FromSeconds(
 				(double)e.BytesRecorded / waveFormat.AverageBytesPerSecond);
 
@@ -82,21 +83,11 @@ public sealed class AudioCapture : IAudioCapture
 
 			if (rms >= _settings.SilenceThreshold)
 			{
-				// Speech resumed: flush the held-back pause so natural cadence is preserved, then write live.
-				foreach (var buffered in pendingSilence)
-					writer.Write(buffered, 0, buffered.Length);
-				pendingSilence.Clear();
-
-				writer.Write(e.Buffer, 0, e.BytesRecorded);
 				speechDetected = true;
 				silenceDuration = TimeSpan.Zero;
 			}
 			else if (speechDetected)
 			{
-				// Hold silence instead of writing it — if this turns out to be trailing silence
-				// (recording stops before speech resumes), it never reaches the file Whisper sees,
-				// which avoids the repeated-last-word hallucination Whisper produces on silent tails.
-				pendingSilence.Add(e.Buffer[..e.BytesRecorded]);
 				silenceDuration += chunkDuration;
 			}
 
@@ -148,20 +139,6 @@ public sealed class AudioCapture : IAudioCapture
 			catch (TimeoutException)
 			{
 				_log.LogWarning("Timed out waiting for RecordingStopped — proceeding anyway");
-			}
-
-			// Flush a bounded amount of the held-back silence, starting from the chunk closest to
-			// the last confirmed speech — that's where a quiet trailing word is most likely to live.
-			// The rest (the genuine dead air further from speech) stays discarded.
-			var trailingPadding = TimeSpan.FromMilliseconds(_settings.TrailingPaddingMs);
-			var paddedDuration = TimeSpan.Zero;
-			foreach (var buffered in pendingSilence)
-			{
-				if (paddedDuration >= trailingPadding)
-					break;
-
-				writer.Write(buffered, 0, buffered.Length);
-				paddedDuration += TimeSpan.FromSeconds((double)buffered.Length / waveFormat.AverageBytesPerSecond);
 			}
 
 			writer.Dispose(); // NAudio is fully stopped — WAV header is now safe to finalize

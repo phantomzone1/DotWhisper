@@ -35,6 +35,28 @@ DotWhisper is a minimalist .NET 10 task tray application that bridges your physi
 
     Security: Central Package Management (CPM) with deterministic dependency locking via packages.lock.json.
 
+🎚️ How Audio Capture & Silence Trimming Works
+
+Recording doesn't arrive as one finished file. NAudio delivers the microphone in small ~100ms chunks as you talk (see AudioCapture.RecordAsync in src/Core/Audio/AudioCapture.cs), and each chunk is classified and handled independently, in real time, as it comes in.
+
+    Loudness per chunk (RMS): every chunk's raw 16-bit samples are normalized to -1.0..1.0 and combined into a single "Root Mean Square" number — a standard way to measure how much energy is in a chunk of audio. No frequency/FFT analysis, just "how loud was this ~100ms slice."
+
+    Speech vs. silence: that RMS number is compared against SilenceThreshold (config.json, Audio section). Above the threshold counts as speech, below counts as silence. This is the "RMS-based Silence Detection (VAD)" mentioned under Technical Architecture above.
+
+    A running silence clock: each chunk also represents a known slice of time, so a silenceDuration counter accumulates every time a "silence" chunk arrives and resets to zero the instant a "speech" chunk arrives. Once that counter reaches SilenceTimeoutMs, DotWhisper decides you've stopped talking and ends the recording automatically.
+
+Why silence has to be stripped before sending to Whisper: Whisper (and faster-whisper) can hallucinate on trailing silence — instead of cleanly ending, the decoder tends to get stuck repeating the last word or phrase over and over. Every auto-stopped recording naturally has up to SilenceTimeoutMs of dead air baked into its tail (that's literally what triggered the stop), so that silence has to be removed from the audio actually sent to the API, or the repeat-loop hallucination reliably reappears.
+
+How the trimming works — buffer, don't write, until you know: rather than writing every chunk to the output WAV as it arrives, "silence" chunks are held in memory (pendingSilence) instead of being committed immediately.
+
+    If speech resumes shortly after (a normal mid-sentence pause), the held chunks are flushed into the file first, followed by the new speech — so natural pauses are preserved untouched.
+
+    If instead the silence clock hits the timeout and recording stops, those held-but-unwritten chunks really were trailing dead air — they're dropped instead of being written, so Whisper never sees them.
+
+The trade-off — trailing padding: dropping all held-back silence has a side effect. People's voice naturally quiets down right before they stop talking (a real phenomenon called declination), so the last word or two can dip under SilenceThreshold, get misclassified as silence, and be discarded along with the real dead air — clipping the end of your sentence. To avoid that, DotWhisper keeps a bounded slice of the held-back buffer — TrailingPaddingMs (default 500ms) — starting from the chunk closest to the last confirmed speech, and only discards whatever silence is left beyond that window.
+
+This is a blunt, fixed-time assumption, not a re-detection of whether that audio is truly speech: if a trailing word takes longer to fade out than TrailingPaddingMs, the portion beyond that window still gets cut. Raising TrailingPaddingMs catches longer trail-offs at the cost of feeding a bit more real silence back to Whisper (some hallucination risk returns); lowering it cuts tighter but clips trailing words more often. If either symptom shows up — a missing last word, or a repeated last word — this is the setting to tune.
+
 📦 Project Structure
 Plaintext
 
