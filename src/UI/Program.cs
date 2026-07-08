@@ -59,7 +59,37 @@ static class Program
             services.AddLogging(builder => builder.AddSerilog(dispose: true));
 
             // Core services
-            services.AddHttpClient<ITranscriptionClient, WhisperTranscriptionClient>();
+            services.AddHttpClient<ITranscriptionClient, WhisperTranscriptionClient>()
+                .ConfigurePrimaryHttpMessageHandler(sp =>
+                {
+                    var connectLogger = sp.GetRequiredService<ILogger<WhisperTranscriptionClient>>();
+                    return new System.Net.Http.SocketsHttpHandler
+                    {
+                        ConnectCallback = async (context, ct) =>
+                        {
+                            var sw = System.Diagnostics.Stopwatch.StartNew();
+                            var socket = new System.Net.Sockets.Socket(
+                                System.Net.Sockets.SocketType.Stream,
+                                System.Net.Sockets.ProtocolType.Tcp)
+                            {
+                                NoDelay = true
+                            };
+
+                            try
+                            {
+                                await socket.ConnectAsync(context.DnsEndPoint, ct).ConfigureAwait(false);
+                                return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
+                            }
+                            finally
+                            {
+                                sw.Stop();
+                                connectLogger.LogInformation(
+                                    "[TIMING] TCP connect to {Endpoint}: {ElapsedMs}ms",
+                                    context.DnsEndPoint, sw.ElapsedMilliseconds);
+                            }
+                        }
+                    };
+                });
             services.AddSingleton<IAudioCapture, AudioCapture>();
             services.AddSingleton<ITranscriptionPipeline, TranscriptionPipeline>();
 

@@ -48,6 +48,29 @@ public sealed class AudioCapture : IAudioCapture
 		var silenceTimeout = TimeSpan.FromMilliseconds(_settings.SilenceTimeoutMs);
 		var pendingSilence = new List<byte[]>();
 
+		// Keeps only the portion of held-back silence closest to the last confirmed speech (up to
+		// TrailingPaddingMs), then drops the rest. Applied both when speech resumes mid-recording
+		// (a long mid-sentence pause is capped, not sent to Whisper in full) and at final stop
+		// (a quiet trailing word survives, the real dead air after it doesn't) — either an uncapped
+		// mid-recording pause or an untrimmed trailing one is enough to trigger Whisper's
+		// silence-triggered repeat-loop hallucination.
+		void FlushBoundedSilence()
+		{
+			var cap = TimeSpan.FromMilliseconds(_settings.TrailingPaddingMs);
+			var written = TimeSpan.Zero;
+
+			foreach (var buffered in pendingSilence)
+			{
+				if (written >= cap)
+					break;
+
+				writer.Write(buffered, 0, buffered.Length);
+				written += TimeSpan.FromSeconds((double)buffered.Length / waveFormat.AverageBytesPerSecond);
+			}
+
+			pendingSilence.Clear();
+		}
+
 		var stopRequestedTcs = new TaskCompletionSource<bool>(
 			TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -82,10 +105,11 @@ public sealed class AudioCapture : IAudioCapture
 
 			if (rms >= _settings.SilenceThreshold)
 			{
-				// Speech resumed: flush the held-back pause so natural cadence is preserved, then write live.
-				foreach (var buffered in pendingSilence)
-					writer.Write(buffered, 0, buffered.Length);
-				pendingSilence.Clear();
+				// Speech resumed: keep only a bounded slice of the pause (closest to the prior
+				// speech) instead of the whole thing — long enough for a natural breath, short
+				// enough to not hand Whisper a silence gap large enough to trigger a mid-transcript
+				// repeat-loop hallucination.
+				FlushBoundedSilence();
 
 				writer.Write(e.Buffer, 0, e.BytesRecorded);
 				speechDetected = true;
@@ -150,19 +174,8 @@ public sealed class AudioCapture : IAudioCapture
 				_log.LogWarning("Timed out waiting for RecordingStopped — proceeding anyway");
 			}
 
-			// Flush a bounded amount of the held-back silence, starting from the chunk closest to
-			// the last confirmed speech — that's where a quiet trailing word is most likely to live.
-			// The rest (the genuine dead air further from speech) stays discarded.
-			var trailingPadding = TimeSpan.FromMilliseconds(_settings.TrailingPaddingMs);
-			var paddedDuration = TimeSpan.Zero;
-			foreach (var buffered in pendingSilence)
-			{
-				if (paddedDuration >= trailingPadding)
-					break;
-
-				writer.Write(buffered, 0, buffered.Length);
-				paddedDuration += TimeSpan.FromSeconds((double)buffered.Length / waveFormat.AverageBytesPerSecond);
-			}
+			// Same bounded flush as mid-recording: keeps a quiet trailing word, drops the rest.
+			FlushBoundedSilence();
 
 			writer.Dispose(); // NAudio is fully stopped — WAV header is now safe to finalize
 		}
