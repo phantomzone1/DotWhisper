@@ -16,7 +16,8 @@
   },
   "UI": {
     "HotKey": "F22",
-    "SuccessSoundVolume": 0.7   //higher is louder up to 1
+    "SuccessSoundVolume": 0.7,   //higher is louder up to 1
+    "IconPulseIntervalMs": 500   //how fast the listening/processing tray icon toggles between its two frames
   },
   "Logging": {
     "MinimumLevel": "Information",

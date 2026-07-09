@@ -18,10 +18,14 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly string _logDirectory;
 
     private readonly Icon _iconIdle;
-    private readonly Icon _iconListening;
-    private readonly Icon _iconProcessing;
-    private readonly Icon _iconSuccess;
+    private readonly Icon _iconListening1;
+    private readonly Icon _iconListening2;
+    private readonly Icon _iconProcessing1;
+    private readonly Icon _iconProcessing2;
     private readonly Icon _iconError;
+
+    private readonly System.Windows.Forms.Timer _pulseTimer;
+    private bool _pulseFrameToggle;
 
     private readonly HotkeyManager? _hotkey;
 
@@ -46,10 +50,14 @@ public sealed class TrayApplicationContext : ApplicationContext
         _successSoundVolume = uiConfig.SuccessSoundVolume;
 
         _iconIdle = LoadIcon("idle.ico");
-        _iconListening = LoadIcon("listening.ico");
-        _iconProcessing = LoadIcon("processing.ico");
-        _iconSuccess = LoadIcon("success.ico");
+        _iconListening1 = LoadIcon("listening_1.ico");
+        _iconListening2 = LoadIcon("listening_2.ico");
+        _iconProcessing1 = LoadIcon("processing_1.ico");
+        _iconProcessing2 = LoadIcon("processing_2.ico");
         _iconError = LoadIcon("error.ico");
+
+        _pulseTimer = new System.Windows.Forms.Timer { Interval = Math.Max(50, uiConfig.IconPulseIntervalMs) };
+        _pulseTimer.Tick += (_, _) => TogglePulseFrame();
 
         _tray = new NotifyIcon
         {
@@ -175,7 +183,6 @@ public sealed class TrayApplicationContext : ApplicationContext
             {
                 ClipboardHelper.SetText(result);
                 SetState(AppState.Idle);
-                FlashSuccess();
                 PlaySuccessSound();
             }
             else
@@ -197,6 +204,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void SetError(string message)
     {
         _state = AppState.Error;
+        _pulseTimer.Stop();
         _tray.Icon = _iconError;
         _log.LogError("Error: {Message}", message);
         RebuildMenuItems(_tray.ContextMenuStrip!);
@@ -205,29 +213,31 @@ public sealed class TrayApplicationContext : ApplicationContext
     private void SetState(AppState state)
     {
         _state = state;
-        _tray.Icon = state switch
+
+        if (state is AppState.Listening or AppState.Processing)
         {
-            AppState.Idle => _iconIdle,
-            AppState.Listening => _iconListening,
-            AppState.Processing => _iconProcessing,
-            AppState.Error => _iconError,
-            _ => _iconIdle
-        };
+            _pulseFrameToggle = false;
+            _tray.Icon = state == AppState.Listening ? _iconListening1 : _iconProcessing1;
+            _pulseTimer.Start();
+        }
+        else
+        {
+            _pulseTimer.Stop();
+            _tray.Icon = state == AppState.Error ? _iconError : _iconIdle;
+        }
+
         RebuildMenuItems(_tray.ContextMenuStrip!);
     }
 
-    private void FlashSuccess()
+    private void TogglePulseFrame()
     {
-        _tray.Icon = _iconSuccess;
-
-        var timer = new System.Windows.Forms.Timer { Interval = 1500 };
-        timer.Tick += (_, _) =>
+        _pulseFrameToggle = !_pulseFrameToggle;
+        _tray.Icon = _state switch
         {
-            _tray.Icon = _iconIdle;
-            timer.Stop();
-            timer.Dispose();
+            AppState.Listening => _pulseFrameToggle ? _iconListening2 : _iconListening1,
+            AppState.Processing => _pulseFrameToggle ? _iconProcessing2 : _iconProcessing1,
+            _ => _tray.Icon
         };
-        timer.Start();
     }
 
     private void OpenLogFile()
@@ -260,6 +270,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _cts?.Cancel();
         _cts?.Dispose();
         _hotkey?.Dispose();
+        _pulseTimer.Stop();
+        _pulseTimer.Dispose();
         _tray.Visible = false;
         _tray.Dispose();
         Application.Exit();
