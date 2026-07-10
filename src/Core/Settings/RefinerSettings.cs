@@ -6,7 +6,7 @@ public sealed class RefinerSettings
     // and if the IPv6 candidate stalls (common with Docker port publishing), connect hangs for
     // ~15s before falling back. An IP literal skips resolution entirely.
     public string BaseUrl { get; init; } = "http://127.0.0.1:11434";
-    public string Model { get; init; } = "llama3.2:1b";
+    public string Model { get; init; } = "qwen2.5:1.5b";
 
     public string SystemPrompt { get; init; } =
         "You are a professional text correction utility. Rewrite casual, spoken-voice transcripts into polished, " +
