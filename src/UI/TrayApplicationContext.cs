@@ -271,7 +271,13 @@ public sealed class TrayApplicationContext : ApplicationContext
 
     private void SetState(AppState state)
     {
+        var enteringListening = state == AppState.Listening && _state != AppState.Listening;
         _state = state;
+
+        if (enteringListening)
+        {
+            PlayStartClickSound();
+        }
 
         if (state is AppState.Listening or AppState.Processing or AppState.Refining)
         {
@@ -341,6 +347,46 @@ public sealed class TrayApplicationContext : ApplicationContext
         _tray.Visible = false;
         _tray.Dispose();
         Application.Exit();
+    }
+
+    private void PlayStartClickSound()
+    {
+        try
+        {
+            const int sampleRate = 44100;
+            const float duration = 0.045f; // fast — a click, not a tone
+            const float volume = 0.3f;
+            const float pitch = 2200f; // higher than the success chime so the two are easy to tell apart
+            const float decayRate = 45f; // near-instant decay
+            int samples = (int)(sampleRate * duration);
+
+            var buffer = new float[samples];
+            for (int i = 0; i < samples; i++)
+            {
+                float t = (float)i / sampleRate;
+                float envelope = MathF.Exp(-decayRate * t);
+                float tone = MathF.Sin(2 * MathF.PI * pitch * t);
+                buffer[i] = volume * envelope * tone;
+            }
+
+            var provider = new BufferedWaveProvider(WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, 1))
+            {
+                BufferLength = buffer.Length * 4 + 4096,
+                ReadFully = false
+            };
+            var bytes = new byte[buffer.Length * 4];
+            Buffer.BlockCopy(buffer, 0, bytes, 0, bytes.Length);
+            provider.AddSamples(bytes, 0, bytes.Length);
+
+            var wo = new WaveOutEvent { Volume = _successSoundVolume };
+            wo.Init(provider);
+            wo.PlaybackStopped += (_, _) => wo.Dispose();
+            wo.Play();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Failed to play start click sound");
+        }
     }
 
     private void PlaySuccessSound()
