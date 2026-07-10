@@ -112,11 +112,56 @@ function Draw-Brain([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [
     $bump1.Dispose(); $bump2.Dispose(); $bump3.Dispose(); $stem.Dispose(); $seam.Dispose()
 }
 
+# 4-point sparkle/star burst, centered at (cx, cy) with half-width/height $size.
+function Draw-Star([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [float]$cx, [float]$cy, [float]$size) {
+    $s = $size
+    $points = @(
+        [System.Drawing.PointF]::new($cx, $cy - $s),
+        [System.Drawing.PointF]::new($cx + ($s * 0.28), $cy - ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx + $s, $cy),
+        [System.Drawing.PointF]::new($cx + ($s * 0.28), $cy + ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx, $cy + $s),
+        [System.Drawing.PointF]::new($cx - ($s * 0.28), $cy + ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx - $s, $cy),
+        [System.Drawing.PointF]::new($cx - ($s * 0.28), $cy - ($s * 0.28))
+    )
+    $brush = New-Object System.Drawing.SolidBrush($color)
+    $g.FillPolygon($brush, $points)
+    $brush.Dispose()
+}
+
+# Magic wand: diagonal rounded stick with a sparkle burst at the tip and two
+# satellite sparkles that twinkle (swap size) between frames.
+function Draw-Wand([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [bool]$twinkle) {
+    if ($twinkle) {
+        $glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+        $g.FillEllipse($glowBrush, 12, 3, 18, 18)
+        $glowBrush.Dispose()
+    }
+
+    $pen = New-Object System.Drawing.Pen($color, 3.2)
+    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $g.DrawLine($pen, 7, 26, 19, 14)
+    $pen.Dispose()
+
+    Draw-Star $g $color 21 11 7
+
+    if ($twinkle) {
+        Draw-Star $g $color 8 8 3.2
+        Draw-Star $g $color 26 22 2.6
+    } else {
+        Draw-Star $g $color 8 8 2
+        Draw-Star $g $color 26 22 3.6
+    }
+}
+
 # Colors
 $idleGray = [System.Drawing.Color]::FromArgb(255, 150, 155, 160)
 $neonGreen = [System.Drawing.Color]::FromArgb(255, 57, 255, 20)
 $cyberBlue = [System.Drawing.Color]::FromArgb(255, 0, 180, 255)
 $safetyRed = [System.Drawing.Color]::FromArgb(255, 220, 30, 30)
+$magicPurple = [System.Drawing.Color]::FromArgb(255, 190, 70, 255)
 
 # --- IDLE: static gray sound-wave bars, calm/resting ---
 $bmp = New-Bitmap
@@ -154,6 +199,21 @@ $g = New-Graphics $bmp
 Draw-Brain $g $cyberBlue $true
 $g.Dispose()
 Save-Icon $bmp 'processing_2'
+$bmp.Dispose()
+
+# --- REFINING: animated 2-frame pulse, magic-purple wand + sparkles ---
+$bmp = New-Bitmap
+$g = New-Graphics $bmp
+Draw-Wand $g $magicPurple $false
+$g.Dispose()
+Save-Icon $bmp 'refining_1'
+$bmp.Dispose()
+
+$bmp = New-Bitmap
+$g = New-Graphics $bmp
+Draw-Wand $g $magicPurple $true
+$g.Dispose()
+Save-Icon $bmp 'refining_2'
 $bmp.Dispose()
 
 # --- ERROR: solid circle + "!", safety red (unchanged) ---

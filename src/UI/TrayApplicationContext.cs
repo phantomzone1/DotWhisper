@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using NAudio.Wave;
+using DotWhisper.Core.Api;
 using DotWhisper.Core.Audio;
 using DotWhisper.Core.Pipeline;
 using DotWhisper.Core.Settings;
@@ -13,6 +14,7 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly NotifyIcon _tray;
     private readonly ITranscriptionPipeline _pipeline;
     private readonly IAudioCapture _audioCapture;
+    private readonly IRefinerClient _refiner;
     private readonly ILogger<TrayApplicationContext> _log;
     private readonly float _successSoundVolume;
     private readonly string _logDirectory;
@@ -22,27 +24,32 @@ public sealed class TrayApplicationContext : ApplicationContext
     private readonly Icon _iconListening2;
     private readonly Icon _iconProcessing1;
     private readonly Icon _iconProcessing2;
+    private readonly Icon _iconRefining1;
+    private readonly Icon _iconRefining2;
     private readonly Icon _iconError;
 
     private readonly System.Windows.Forms.Timer _pulseTimer;
     private bool _pulseFrameToggle;
 
     private readonly HotkeyManager? _hotkey;
+    private readonly HotkeyManager? _refineHotkey;
 
     private CancellationTokenSource? _cts;
     private AppState _state = AppState.Idle;
 
-    private enum AppState { Idle, Listening, Processing, Error }
+    private enum AppState { Idle, Listening, Processing, Refining, Error }
 
     public TrayApplicationContext(
         ITranscriptionPipeline pipeline,
         IAudioCapture audioCapture,
+        IRefinerClient refiner,
         IOptions<UiSettings> uiSettings,
         ILogger<TrayApplicationContext> log,
         string logDirectory)
     {
         _pipeline = pipeline;
         _audioCapture = audioCapture;
+        _refiner = refiner;
         _log = log;
         _logDirectory = logDirectory;
 
@@ -54,6 +61,8 @@ public sealed class TrayApplicationContext : ApplicationContext
         _iconListening2 = LoadIcon("listening_2.ico");
         _iconProcessing1 = LoadIcon("processing_1.ico");
         _iconProcessing2 = LoadIcon("processing_2.ico");
+        _iconRefining1 = LoadIcon("refining_1.ico");
+        _iconRefining2 = LoadIcon("refining_2.ico");
         _iconError = LoadIcon("error.ico");
 
         _pulseTimer = new System.Windows.Forms.Timer { Interval = Math.Max(50, uiConfig.IconPulseIntervalMs) };
@@ -77,6 +86,19 @@ public sealed class TrayApplicationContext : ApplicationContext
             _log.LogWarning(ex, "Hotkey {HotKey} registration failed", uiConfig.HotKey);
             // Hotkey unavailable — menu-only mode
         }
+
+        try
+        {
+            _refineHotkey = new HotkeyManager(uiConfig.RefineHotKey, OnRefineHotkeyPressed);
+            _log.LogInformation("Refine hotkey registered: {RefineHotKey}", uiConfig.RefineHotKey);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Refine hotkey {RefineHotKey} registration failed", uiConfig.RefineHotKey);
+            // Refine hotkey unavailable — raw-transcription hotkey still works
+        }
+
+        _ = WarmupRefinerAsync();
 
         // Validate mic device at startup
         try
@@ -117,7 +139,11 @@ public sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add(new ToolStripMenuItem("Exit", null, (_, _) => ExitApplication()));
     }
 
-    private void OnHotkeyPressed()
+    private void OnHotkeyPressed() => HandleHotkeyPress(refine: false);
+
+    private void OnRefineHotkeyPressed() => HandleHotkeyPress(refine: true);
+
+    private void HandleHotkeyPress(bool refine)
     {
         if (_state == AppState.Error)
         {
@@ -142,7 +168,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
-        if (_state == AppState.Processing)
+        if (_state is AppState.Processing or AppState.Refining)
         {
             _cts?.Cancel();
             _cts?.Dispose();
@@ -150,7 +176,7 @@ public sealed class TrayApplicationContext : ApplicationContext
             _log.LogInformation("Previous {State} cancelled via hotkey, starting fresh recording", _state);
         }
 
-        _ = StartRecordingAsync();
+        _ = StartRecordingAsync(refine);
     }
 
     private void StopAndTranscribe()
@@ -159,7 +185,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _audioCapture.RequestStop();
     }
 
-    private async Task StartRecordingAsync()
+    private async Task StartRecordingAsync(bool refine = false)
     {
         _cts = new CancellationTokenSource();
         var ct = _cts.Token;
@@ -181,6 +207,27 @@ public sealed class TrayApplicationContext : ApplicationContext
 
             if (result != null)
             {
+                if (refine)
+                {
+                    SetState(AppState.Refining);
+                    sw.Restart();
+                    try
+                    {
+                        result = await _refiner.RefineAsync(result, ct);
+                        _log.LogInformation("[TIMING] Refine: {ElapsedMs}ms", sw.ElapsedMilliseconds);
+                    }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        // Refiner-side timeout, not a user cancellation — fall back to raw text below.
+                        _log.LogWarning("Refiner call timed out, falling back to raw transcription");
+                    }
+                    catch (Exception ex)
+                    {
+                        // Don't lose the words already said over a cleanup-container hiccup.
+                        _log.LogWarning(ex, "Refiner call failed, falling back to raw transcription");
+                    }
+                }
+
                 ClipboardHelper.SetText(result);
                 SetState(AppState.Idle);
                 PlaySuccessSound();
@@ -201,6 +248,18 @@ public sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    private async Task WarmupRefinerAsync()
+    {
+        try
+        {
+            await _refiner.WarmupAsync();
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Refiner warmup failed; first refine request will eat the cold-start cost");
+        }
+    }
+
     private void SetError(string message)
     {
         _state = AppState.Error;
@@ -214,10 +273,15 @@ public sealed class TrayApplicationContext : ApplicationContext
     {
         _state = state;
 
-        if (state is AppState.Listening or AppState.Processing)
+        if (state is AppState.Listening or AppState.Processing or AppState.Refining)
         {
             _pulseFrameToggle = false;
-            _tray.Icon = state == AppState.Listening ? _iconListening1 : _iconProcessing1;
+            _tray.Icon = state switch
+            {
+                AppState.Listening => _iconListening1,
+                AppState.Refining => _iconRefining1,
+                _ => _iconProcessing1
+            };
             _pulseTimer.Start();
         }
         else
@@ -236,6 +300,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         {
             AppState.Listening => _pulseFrameToggle ? _iconListening2 : _iconListening1,
             AppState.Processing => _pulseFrameToggle ? _iconProcessing2 : _iconProcessing1,
+            AppState.Refining => _pulseFrameToggle ? _iconRefining2 : _iconRefining1,
             _ => _tray.Icon
         };
     }
@@ -270,6 +335,7 @@ public sealed class TrayApplicationContext : ApplicationContext
         _cts?.Cancel();
         _cts?.Dispose();
         _hotkey?.Dispose();
+        _refineHotkey?.Dispose();
         _pulseTimer.Stop();
         _pulseTimer.Dispose();
         _tray.Visible = false;

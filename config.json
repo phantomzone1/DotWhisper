@@ -7,6 +7,15 @@
     "VadFilter": true,
     "ColdStartThresholdMinutes": 30
   },
+  "Refiner": {
+    "BaseUrl": "http://127.0.0.1:11434",
+    "Model": "llama3.2:1b",
+    "SystemPrompt": "You are a professional text correction utility. Rewrite casual, spoken-voice transcripts into polished, professional business English suitable for Slack or corporate email. Strip out all verbal fillers, \"ums\", \"ahs\", repetitions, and casual slang. Maintain the original intent exactly, but correct grammar, punctuation, and structural flow. Do not add introductory text, do not explain your changes, and do not provide pleasantries. Output ONLY the finalized text.",
+    "Temperature": 0.1,
+    "NumCtx": 2048,
+    "NumPredict": 150,
+    "TimeoutSeconds": 10
+  },
   "Audio": {
     "MicDevices": [ "Logi" ],
     "SilenceThreshold": 0.003,   //higher is less sensitive
@@ -16,6 +25,7 @@
   },
   "UI": {
     "HotKey": "F22",
+    "RefineHotKey": "F21",
     "SuccessSoundVolume": 0.7,   //higher is louder up to 1
     "IconPulseIntervalMs": 500   //how fast the listening/processing tray icon toggles between its two frames
   },
