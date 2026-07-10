@@ -30,7 +30,8 @@ public sealed class TranscriptionPipeline : ITranscriptionPipeline
         {
             Model = _whisperSettings.Model,
             Language = _whisperSettings.Language,
-            Temperature = _whisperSettings.Temperature
+            Temperature = _whisperSettings.Temperature,
+            VadFilter = _whisperSettings.VadFilter
         };
 
         _log.LogInformation("Sending {Bytes} bytes for transcription", audioStream.Length);

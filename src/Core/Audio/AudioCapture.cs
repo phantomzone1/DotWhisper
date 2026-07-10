@@ -27,105 +27,168 @@ public sealed class AudioCapture : IAudioCapture
         FindMicDevice();
     }
 
-    public async Task<MemoryStream> RecordAsync(CancellationToken ct = default)
-    {
-        var deviceNumber = FindMicDevice();
-        var waveFormat = new WaveFormat(rate: 16000, bits: 16, channels: 1);
+	public async Task<MemoryStream> RecordAsync(CancellationToken ct = default)
+	{
+		var deviceNumber = FindMicDevice();
+		var waveFormat = new WaveFormat(rate: 16000, bits: 16, channels: 1);
+		using var capture = new WaveInEvent
+		{
+			DeviceNumber = deviceNumber,
+			WaveFormat = waveFormat,
+			BufferMilliseconds = 100
+		};
 
-        using var capture = new WaveInEvent
-        {
-            DeviceNumber = deviceNumber,
-            WaveFormat = waveFormat,
-            BufferMilliseconds = 100
-        };
+		var audioStream = new MemoryStream();
+		var writer = new WaveFileWriter(audioStream, waveFormat);
 
-        var audioStream = new MemoryStream();
-        var writer = new WaveFileWriter(audioStream, waveFormat);
-        var speechDetected = false;
-        var silenceDuration = TimeSpan.Zero;
-        var totalDuration = TimeSpan.Zero;
-        var maxDuration = TimeSpan.FromSeconds(_settings.MaxRecordSeconds);
-        var silenceTimeout = TimeSpan.FromMilliseconds(_settings.SilenceTimeoutMs);
+		var speechDetected = false;
+		var silenceDuration = TimeSpan.Zero;
+		var totalDuration = TimeSpan.Zero;
+		var maxDuration = TimeSpan.FromSeconds(_settings.MaxRecordSeconds);
+		var silenceTimeout = TimeSpan.FromMilliseconds(_settings.SilenceTimeoutMs);
+		var pendingSilence = new List<byte[]>();
 
-        var tcs = new TaskCompletionSource<bool>();
-        _activeTcs = tcs;
+		// Keeps only the portion of held-back silence closest to the last confirmed speech (up to
+		// TrailingPaddingMs), then drops the rest. Applied both when speech resumes mid-recording
+		// (a long mid-sentence pause is capped, not sent to Whisper in full) and at final stop
+		// (a quiet trailing word survives, the real dead air after it doesn't) — either an uncapped
+		// mid-recording pause or an untrimmed trailing one is enough to trigger Whisper's
+		// silence-triggered repeat-loop hallucination.
+		void FlushBoundedSilence()
+		{
+			var cap = TimeSpan.FromMilliseconds(_settings.TrailingPaddingMs);
+			var written = TimeSpan.Zero;
 
-        capture.DataAvailable += (_, e) =>
-        {
-            if (ct.IsCancellationRequested)
-            {
-                tcs.TrySetCanceled(ct);
-                return;
-            }
+			foreach (var buffered in pendingSilence)
+			{
+				if (written >= cap)
+					break;
 
-            writer.Write(e.Buffer, 0, e.BytesRecorded);
+				writer.Write(buffered, 0, buffered.Length);
+				written += TimeSpan.FromSeconds((double)buffered.Length / waveFormat.AverageBytesPerSecond);
+			}
 
-            var chunkDuration = TimeSpan.FromSeconds((double)e.BytesRecorded / waveFormat.AverageBytesPerSecond);
-            totalDuration += chunkDuration;
+			pendingSilence.Clear();
+		}
 
-            var rms = CalculateRms(e.Buffer, e.BytesRecorded);
+		var stopRequestedTcs = new TaskCompletionSource<bool>(
+			TaskCreationOptions.RunContinuationsAsynchronously);
 
-            // Log RMS every ~1 second for tuning (every 10th chunk at 100ms buffer)
-            if ((int)(totalDuration.TotalMilliseconds / 100) % 10 == 0)
-            {
-                _log.LogDebug("RMS: {Rms:F4} | Threshold: {Threshold} | Speech: {Speech} | Silence: {SilenceMs}ms",
-                    rms, _settings.SilenceThreshold, speechDetected, silenceDuration.TotalMilliseconds);
-            }
+		var recordingStoppedTcs = new TaskCompletionSource<bool>(
+			TaskCreationOptions.RunContinuationsAsynchronously);
 
-            if (rms >= _settings.SilenceThreshold)
-            {
-                speechDetected = true;
-                silenceDuration = TimeSpan.Zero;
-            }
-            else if (speechDetected)
-            {
-                silenceDuration += chunkDuration;
-            }
+		_activeTcs = stopRequestedTcs;
 
-            if (totalDuration >= maxDuration)
-            {
-                _log.LogInformation("Max recording duration reached ({MaxSeconds}s)", _settings.MaxRecordSeconds);
-                tcs.TrySetResult(true);
-            }
-            else if (speechDetected && silenceDuration >= silenceTimeout)
-            {
-                _log.LogInformation("Silence detected after {TotalMs}ms of recording", totalDuration.TotalMilliseconds);
-                tcs.TrySetResult(true);
-            }
-        };
+		using var _ = ct.Register(() => stopRequestedTcs.TrySetCanceled(ct));
 
-        capture.RecordingStopped += (_, e) =>
-        {
-            if (e.Exception != null)
-                tcs.TrySetException(e.Exception);
-            else
-                tcs.TrySetResult(true);
-        };
+		capture.DataAvailable += (_, e) =>
+		{
+			if (ct.IsCancellationRequested)
+			{
+				stopRequestedTcs.TrySetCanceled(ct);
+				return;
+			}
 
-        _log.LogInformation("Recording started on device {DeviceNumber}", deviceNumber);
-        capture.StartRecording();
+			var chunkDuration = TimeSpan.FromSeconds(
+				(double)e.BytesRecorded / waveFormat.AverageBytesPerSecond);
 
-        try
-        {
-            await tcs.Task;
-        }
-        finally
-        {
-            _activeTcs = null;
-            capture.StopRecording();
-            writer.Dispose(); // Finalizes WAV header with correct RIFF/data sizes
-        }
+			totalDuration += chunkDuration;
 
-        // ToArray works on disposed MemoryStream — gives us the finalized WAV bytes
-        var wavBytes = audioStream.ToArray();
-        var finalStream = new MemoryStream(wavBytes);
-        _log.LogInformation("Recording complete: {TotalMs}ms, {Bytes} bytes",
-            totalDuration.TotalMilliseconds, finalStream.Length);
+			var rms = CalculateRms(e.Buffer, e.BytesRecorded);
 
+			if ((int)(totalDuration.TotalMilliseconds / 100) % 10 == 0)
+			{
+				_log.LogDebug(
+					"RMS: {Rms:F4} | Threshold: {Threshold} | Speech: {Speech} | Silence: {SilenceMs}ms",
+					rms, _settings.SilenceThreshold, speechDetected, silenceDuration.TotalMilliseconds);
+			}
 
+			if (rms >= _settings.SilenceThreshold)
+			{
+				// Speech resumed: keep only a bounded slice of the pause (closest to the prior
+				// speech) instead of the whole thing — long enough for a natural breath, short
+				// enough to not hand Whisper a silence gap large enough to trigger a mid-transcript
+				// repeat-loop hallucination.
+				FlushBoundedSilence();
 
-        return finalStream;
-    }
+				writer.Write(e.Buffer, 0, e.BytesRecorded);
+				speechDetected = true;
+				silenceDuration = TimeSpan.Zero;
+			}
+			else if (speechDetected)
+			{
+				// Hold silence instead of writing it — if this turns out to be trailing silence
+				// (recording stops before speech resumes), it never reaches the file Whisper sees,
+				// which avoids the repeated-last-word hallucination Whisper produces on silent tails.
+				pendingSilence.Add(e.Buffer[..e.BytesRecorded]);
+				silenceDuration += chunkDuration;
+			}
+
+			if (totalDuration >= maxDuration)
+			{
+				_log.LogInformation("Max recording duration reached ({MaxSeconds}s)",
+					_settings.MaxRecordSeconds);
+				stopRequestedTcs.TrySetResult(true);
+			}
+			else if (speechDetected && silenceDuration >= silenceTimeout)
+			{
+				_log.LogInformation("Silence detected after {TotalMs}ms of recording",
+					totalDuration.TotalMilliseconds);
+				stopRequestedTcs.TrySetResult(true);
+			}
+		};
+
+		capture.RecordingStopped += (_, e) =>
+		{
+			if (e.Exception != null)
+			{
+				stopRequestedTcs.TrySetException(e.Exception);
+				recordingStoppedTcs.TrySetException(e.Exception);
+			}
+			else
+			{
+				recordingStoppedTcs.TrySetResult(true);
+			}
+		};
+
+		_log.LogInformation("Recording started on device {DeviceNumber}", deviceNumber);
+		capture.StartRecording();
+
+		try
+		{
+			await stopRequestedTcs.Task.ConfigureAwait(false);
+		}
+		finally
+		{
+			_activeTcs = null;
+			capture.StopRecording();
+
+			try
+			{
+				await recordingStoppedTcs.Task
+					.WaitAsync(TimeSpan.FromSeconds(5))
+					.ConfigureAwait(false);
+			}
+			catch (TimeoutException)
+			{
+				_log.LogWarning("Timed out waiting for RecordingStopped — proceeding anyway");
+			}
+
+			// Same bounded flush as mid-recording: keeps a quiet trailing word, drops the rest.
+			FlushBoundedSilence();
+
+			writer.Dispose(); // NAudio is fully stopped — WAV header is now safe to finalize
+		}
+
+		var wavBytes = audioStream.ToArray();
+
+		_log.LogInformation(
+			"Recording complete: {TotalMs}ms, {Bytes} bytes",
+			totalDuration.TotalMilliseconds,
+			wavBytes.Length);
+
+		return new MemoryStream(wavBytes, writable: false);
+	}
 
     private int FindMicDevice()
     {

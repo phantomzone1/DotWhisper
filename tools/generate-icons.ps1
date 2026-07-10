@@ -3,6 +3,10 @@ Add-Type -AssemblyName System.Drawing
 $outputDir = Join-Path (Join-Path (Join-Path $PSScriptRoot '..') 'artifacts') 'icons'
 if (!(Test-Path $outputDir)) { New-Item -ItemType Directory -Path $outputDir -Force | Out-Null }
 
+# Remove stale frames from prior icon sets (e.g. success.ico) so the output dir only
+# ever contains what this script currently generates.
+Get-ChildItem -Path $outputDir -Filter '*.ico' -ErrorAction SilentlyContinue | Remove-Item -Force
+
 function Save-Icon([System.Drawing.Bitmap]$bmp, [string]$name) {
     $icoPath = Join-Path $outputDir ($name + '.ico')
     $ms = New-Object System.IO.MemoryStream
@@ -36,118 +40,188 @@ function New-Bitmap {
     return $bmp
 }
 
+function New-Graphics([System.Drawing.Bitmap]$bmp) {
+    $g = [System.Drawing.Graphics]::FromImage($bmp)
+    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
+    $g.Clear([System.Drawing.Color]::Transparent)
+    return $g
+}
+
+function EllipsePath([float]$x, [float]$y, [float]$w, [float]$h) {
+    $p = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $p.AddEllipse($x, $y, $w, $h)
+    return $p
+}
+
+# Equalizer-style sound-wave bars, centered vertically. $heights are bar heights in px.
+function Draw-Waveform([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [float[]]$heights) {
+    $barWidth = 3.2
+    $spacing = 5.4
+    $startX = 6.2
+    $centerY = 16
+
+    for ($i = 0; $i -lt $heights.Length; $i++) {
+        $x = $startX + ($i * $spacing)
+        $h = $heights[$i]
+        $pen = New-Object System.Drawing.Pen($color, $barWidth)
+        $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+        $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+        $g.DrawLine($pen, $x, $centerY - ($h / 2), $x, $centerY + ($h / 2))
+        $pen.Dispose()
+    }
+}
+
+# Filled brain silhouette: two unioned hemisphere blobs with scalloped top bumps
+# and a brainstem nub, split by a carved-out centerline seam.
+function Draw-Brain([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [bool]$glowSpark) {
+    $left = EllipsePath 4 10 13 15
+    $region = New-Object System.Drawing.Region($left)
+    $right = EllipsePath 15 10 13 15
+    $region.Union($right)
+    $bump1 = EllipsePath 6 6 8 8
+    $region.Union($bump1)
+    $bump2 = EllipsePath 12 4 9 9
+    $region.Union($bump2)
+    $bump3 = EllipsePath 18 6 8 8
+    $region.Union($bump3)
+    $stem = EllipsePath 13 23 6 5
+    $region.Union($stem)
+
+    $seam = New-Object System.Drawing.Drawing2D.GraphicsPath
+    $seam.AddRectangle([System.Drawing.RectangleF]::new(15, 7, 2, 20))
+    $region.Exclude($seam)
+
+    if ($glowSpark) {
+        $glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+        $g.FillEllipse($glowBrush, 1, 2, 30, 28)
+        $glowBrush.Dispose()
+    }
+
+    $brush = New-Object System.Drawing.SolidBrush($color)
+    $g.FillRegion($brush, $region)
+    $brush.Dispose()
+
+    if ($glowSpark) {
+        $sparkBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(235, 255, 255, 255))
+        $g.FillEllipse($sparkBrush, 9, 13, 4, 4)
+        $g.FillEllipse($sparkBrush, 19, 15, 3, 3)
+        $sparkBrush.Dispose()
+    }
+
+    $region.Dispose(); $left.Dispose(); $right.Dispose()
+    $bump1.Dispose(); $bump2.Dispose(); $bump3.Dispose(); $stem.Dispose(); $seam.Dispose()
+}
+
+# 4-point sparkle/star burst, centered at (cx, cy) with half-width/height $size.
+function Draw-Star([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [float]$cx, [float]$cy, [float]$size) {
+    $s = $size
+    $points = @(
+        [System.Drawing.PointF]::new($cx, $cy - $s),
+        [System.Drawing.PointF]::new($cx + ($s * 0.28), $cy - ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx + $s, $cy),
+        [System.Drawing.PointF]::new($cx + ($s * 0.28), $cy + ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx, $cy + $s),
+        [System.Drawing.PointF]::new($cx - ($s * 0.28), $cy + ($s * 0.28)),
+        [System.Drawing.PointF]::new($cx - $s, $cy),
+        [System.Drawing.PointF]::new($cx - ($s * 0.28), $cy - ($s * 0.28))
+    )
+    $brush = New-Object System.Drawing.SolidBrush($color)
+    $g.FillPolygon($brush, $points)
+    $brush.Dispose()
+}
+
+# Magic wand: diagonal rounded stick with a sparkle burst at the tip and two
+# satellite sparkles that twinkle (swap size) between frames.
+function Draw-Wand([System.Drawing.Graphics]$g, [System.Drawing.Color]$color, [bool]$twinkle) {
+    if ($twinkle) {
+        $glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(70, $color.R, $color.G, $color.B))
+        $g.FillEllipse($glowBrush, 12, 3, 18, 18)
+        $glowBrush.Dispose()
+    }
+
+    $pen = New-Object System.Drawing.Pen($color, 3.2)
+    $pen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $pen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
+    $g.DrawLine($pen, 7, 26, 19, 14)
+    $pen.Dispose()
+
+    Draw-Star $g $color 21 11 7
+
+    if ($twinkle) {
+        Draw-Star $g $color 8 8 3.2
+        Draw-Star $g $color 26 22 2.6
+    } else {
+        Draw-Star $g $color 8 8 2
+        Draw-Star $g $color 26 22 3.6
+    }
+}
+
 # Colors
-$darkGray = [System.Drawing.Color]::FromArgb(120, 130, 130, 130)
+$idleGray = [System.Drawing.Color]::FromArgb(255, 150, 155, 160)
 $neonGreen = [System.Drawing.Color]::FromArgb(255, 57, 255, 20)
 $cyberBlue = [System.Drawing.Color]::FromArgb(255, 0, 180, 255)
-$brightGreen = [System.Drawing.Color]::FromArgb(255, 0, 220, 60)
 $safetyRed = [System.Drawing.Color]::FromArgb(255, 220, 30, 30)
+$magicPurple = [System.Drawing.Color]::FromArgb(255, 190, 70, 255)
 
-# --- IDLE: Hollow circle + thin ear, dark gray / low opacity ---
+# --- IDLE: static gray sound-wave bars, calm/resting ---
 $bmp = New-Bitmap
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.Clear([System.Drawing.Color]::Transparent)
-# Hollow circle
-$circlePen = New-Object System.Drawing.Pen($darkGray, 1.5)
-$g.DrawEllipse($circlePen, 6, 4, 20, 20)
-$circlePen.Dispose()
-# Thin ear
-$earPen = New-Object System.Drawing.Pen($darkGray, 2)
-$earPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$earPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($earPen, 9, 6, 16, 20, -80, 240)
-$innerPen = New-Object System.Drawing.Pen($darkGray, 1.5)
-$innerPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$innerPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($innerPen, 13, 11, 7, 10, -60, 190)
-$earPen.Dispose()
-$innerPen.Dispose()
+$g = New-Graphics $bmp
+Draw-Waveform $g $idleGray @(8, 12, 16, 12, 8)
 $g.Dispose()
 Save-Icon $bmp 'idle'
 $bmp.Dispose()
 
-# --- LISTENING: Solid circle + bold ear, neon green ---
+# --- LISTENING: animated 2-frame pulse, neon green sound-wave bars ---
 $bmp = New-Bitmap
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.Clear([System.Drawing.Color]::Transparent)
-# Glow circle
-$glowBrush = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(40, 57, 255, 20))
-$g.FillEllipse($glowBrush, 3, 1, 26, 26)
-$glowBrush.Dispose()
-# Solid circle
-$solidBrush = New-Object System.Drawing.SolidBrush($neonGreen)
-$g.FillEllipse($solidBrush, 6, 4, 20, 20)
-$solidBrush.Dispose()
-# Bold ear (dark for contrast)
-$earPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 10, 40, 5), 3)
-$earPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$earPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($earPen, 9, 6, 16, 20, -80, 240)
-$innerPen = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(255, 10, 40, 5), 2)
-$innerPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$innerPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($innerPen, 13, 11, 7, 10, -60, 190)
-$earPen.Dispose()
-$innerPen.Dispose()
+$g = New-Graphics $bmp
+Draw-Waveform $g $neonGreen @(10, 18, 24, 18, 10)
 $g.Dispose()
-Save-Icon $bmp 'listening'
+Save-Icon $bmp 'listening_1'
 $bmp.Dispose()
 
-# --- PROCESSING: Rotating segments / pulse, cyber blue ---
 $bmp = New-Bitmap
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.Clear([System.Drawing.Color]::Transparent)
-# Center dot
-$centerBrush = New-Object System.Drawing.SolidBrush($cyberBlue)
-$g.FillEllipse($centerBrush, 12, 10, 8, 8)
-$centerBrush.Dispose()
-# Rotating arc segments (staggered thickness for motion feel)
-$arcPen1 = New-Object System.Drawing.Pen($cyberBlue, 3)
-$arcPen1.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$arcPen1.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($arcPen1, 4, 2, 24, 24, -30, 60)
-$g.DrawArc($arcPen1, 4, 2, 24, 24, 150, 60)
-$arcPen1.Dispose()
-$arcPen2 = New-Object System.Drawing.Pen([System.Drawing.Color]::FromArgb(140, 0, 180, 255), 2)
-$arcPen2.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$arcPen2.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawArc($arcPen2, 4, 2, 24, 24, 60, 40)
-$g.DrawArc($arcPen2, 4, 2, 24, 24, 240, 40)
-$arcPen2.Dispose()
+$g = New-Graphics $bmp
+Draw-Waveform $g $neonGreen @(18, 26, 14, 26, 18)
 $g.Dispose()
-Save-Icon $bmp 'processing'
+Save-Icon $bmp 'listening_2'
 $bmp.Dispose()
 
-# --- SUCCESS: Solid circle + checkmark, bright green ---
+# --- PROCESSING: animated 2-frame pulse, cyber blue brain "thinking" ---
 $bmp = New-Bitmap
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.Clear([System.Drawing.Color]::Transparent)
-$solidBrush = New-Object System.Drawing.SolidBrush($brightGreen)
-$g.FillEllipse($solidBrush, 4, 4, 24, 24)
-$solidBrush.Dispose()
-$checkPen = New-Object System.Drawing.Pen([System.Drawing.Color]::White, 3)
-$checkPen.StartCap = [System.Drawing.Drawing2D.LineCap]::Round
-$checkPen.EndCap = [System.Drawing.Drawing2D.LineCap]::Round
-$g.DrawLine($checkPen, 10, 16, 14, 21)
-$g.DrawLine($checkPen, 14, 21, 22, 11)
-$checkPen.Dispose()
+$g = New-Graphics $bmp
+Draw-Brain $g $cyberBlue $false
 $g.Dispose()
-Save-Icon $bmp 'success'
+Save-Icon $bmp 'processing_1'
 $bmp.Dispose()
 
-# --- ERROR: Solid circle + "!", safety red ---
 $bmp = New-Bitmap
-$g = [System.Drawing.Graphics]::FromImage($bmp)
-$g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-$g.Clear([System.Drawing.Color]::Transparent)
+$g = New-Graphics $bmp
+Draw-Brain $g $cyberBlue $true
+$g.Dispose()
+Save-Icon $bmp 'processing_2'
+$bmp.Dispose()
+
+# --- REFINING: animated 2-frame pulse, magic-purple wand + sparkles ---
+$bmp = New-Bitmap
+$g = New-Graphics $bmp
+Draw-Wand $g $magicPurple $false
+$g.Dispose()
+Save-Icon $bmp 'refining_1'
+$bmp.Dispose()
+
+$bmp = New-Bitmap
+$g = New-Graphics $bmp
+Draw-Wand $g $magicPurple $true
+$g.Dispose()
+Save-Icon $bmp 'refining_2'
+$bmp.Dispose()
+
+# --- ERROR: solid circle + "!", safety red (unchanged) ---
+$bmp = New-Bitmap
+$g = New-Graphics $bmp
 $solidBrush = New-Object System.Drawing.SolidBrush($safetyRed)
 $g.FillEllipse($solidBrush, 4, 4, 24, 24)
 $solidBrush.Dispose()
-# Exclamation mark
 $font = New-Object System.Drawing.Font('Arial', 18, [System.Drawing.FontStyle]::Bold)
 $sf = New-Object System.Drawing.StringFormat
 $sf.Alignment = [System.Drawing.StringAlignment]::Center

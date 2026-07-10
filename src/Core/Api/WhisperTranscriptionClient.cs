@@ -33,7 +33,8 @@ public sealed class WhisperTranscriptionClient : ITranscriptionClient
         {
             Model = _settings.Model,
             Language = _settings.Language,
-            Temperature = _settings.Temperature
+            Temperature = _settings.Temperature,
+            VadFilter = _settings.VadFilter
         };
 
         await TranscribeAsync(silence, request, ct);
@@ -60,17 +61,30 @@ public sealed class WhisperTranscriptionClient : ITranscriptionClient
         fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("audio/wav");
         content.Add(fileContent, "file", "audio.wav");
         content.Add(new StringContent(request.Model), "model");
+        content.Add(new StringContent(request.Language), "language");
+        content.Add(new StringContent(request.Temperature.ToString(System.Globalization.CultureInfo.InvariantCulture)), "temperature");
+        content.Add(new StringContent(request.VadFilter ? "true" : "false"), "vad_filter");
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var response = await _http.PostAsync("/v1/audio/transcriptions", content, ct);
-        sw.Stop();
-
-        _log.LogInformation("Transcription API responded in {ElapsedMs}ms with status {StatusCode}",
-            sw.ElapsedMilliseconds, response.StatusCode);
+        var headersMs = sw.ElapsedMilliseconds;
 
         response.EnsureSuccessStatusCode();
 
         var json = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        sw.Stop();
+
+        // Bottleneck diagnosis: headers-received time (network + server processing before it starts
+        // streaming the response) vs body-read time (large JSON payload / slow deserialize). Only
+        // computed when Information logging is on.
+        if (_log.IsEnabled(LogLevel.Information))
+        {
+            var bodyMs = sw.ElapsedMilliseconds - headersMs;
+            _log.LogInformation(
+                "[TIMING] Transcription round-trip {TotalMs}ms (headers {HeadersMs}ms, body-read {BodyMs}ms) with status {StatusCode}",
+                sw.ElapsedMilliseconds, headersMs, bodyMs, response.StatusCode);
+        }
+
         return json.GetProperty("text").GetString() ?? string.Empty;
     }
 

@@ -1,23 +1,36 @@
 {
   "Whisper": {
-    "BaseUrl": "http://127.0.0.1:10300/v1",
+    "BaseUrl": "http://127.0.0.1:10300/v1",  //swagger page http://localhost:10300/docs#
     "Model": "deepdml/faster-whisper-large-v3-turbo-ct2",
     "Language": "en",
     "Temperature": 0,
+    "VadFilter": true,
     "ColdStartThresholdMinutes": 30
+  },
+  "Refiner": {
+    "BaseUrl": "http://127.0.0.1:11434",
+    "Model": "llama3.2:1b",
+    "SystemPrompt": "You are a technical editor for a Director of Engineering. Translate rough, spoken-voice audio transcripts into polished, professional business English and technical communication suitable for Slack or corporate architecture emails. Clean up verbal fillers, \"ums\", \"ahs\", repetitions, and casual slang while perfectly preserving all technical terminology, infrastructure concepts, and code architecture descriptions. Maintain the original intent exactly, and correct grammar, punctuation, and structural flow. Do not add introductory text, do not explain your changes, and do not provide pleasantries. Output ONLY the finalized text. ",
+    "Temperature": 0.1,
+    "NumCtx": 2048,
+    "NumPredict": 150,
+    "TimeoutSeconds": 10
   },
   "Audio": {
     "MicDevices": [ "Logi" ],
-    "SilenceThreshold": 0.003, 
-    "SilenceTimeoutMs": 2200,
-    "MaxRecordSeconds": 300
+    "SilenceThreshold": 0.003,   //higher is less sensitive
+    "SilenceTimeoutMs": 2500,
+    "MaxRecordSeconds": 300,
+    "TrailingPaddingMs": 500
   },
   "UI": {
     "HotKey": "F22",
-    "SuccessSoundVolume": 0.7
+    "RefineHotKey": "F20",
+    "SuccessSoundVolume": 0.7,   //higher is louder up to 1
+    "IconPulseIntervalMs": 500   //how fast the listening/processing tray icon toggles between its two frames
   },
   "Logging": {
-    "MinimumLevel": "Debug",
+    "MinimumLevel": "Information",
     "LogToFile": true
   }
 }
